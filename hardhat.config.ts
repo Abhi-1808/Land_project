@@ -1,6 +1,8 @@
 import { defineConfig } from "hardhat/config";
 import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
+import "@nomicfoundation/hardhat-ethers";
 import * as dotenv from "dotenv";
+import "@nomicfoundation/hardhat-ethers";
 
 dotenv.config();
 
