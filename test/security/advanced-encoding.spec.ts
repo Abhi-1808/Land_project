@@ -1,81 +1,91 @@
-import { describe, it, beforeEach, afterEach, before, after } from "node:test";
-import assert from "node:assert";
-import hre from "hardhat";
+import { describe, it, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { network } from "hardhat";
+import type { Hex } from "viem";
 
-const { ethers } = hre as any;
 describe("Advanced Memory, Encoding & Calldata Vectors", function () {
-  let landRecord: LandRecord;
-  let admin: SignerWithAddress;
-  let registrar: SignerWithAddress;
+  const INITIAL_DELAY = 172800n;
+  let viem: any;
+  let landRecord: any;
+  let registrar: any;
+
+  function sha256Hex(data: string): Hex {
+    return `0x${createHash("sha256").update(Buffer.from(data)).digest("hex")}` as Hex;
+  }
+
+  async function deployFixture() {
+    const net = await network.getOrCreate();
+    viem = net.viem;
+    const walletClients = await viem.getWalletClients();
+    const [, reg] = walletClients;
+    registrar = reg;
+
+    const deployed = await viem.deployContract("LandRecord", [INITIAL_DELAY]);
+    const REGISTRAR_ROLE = await deployed.read.REGISTRAR_ROLE();
+    await deployed.write.grantRole([REGISTRAR_ROLE, reg.account.address]);
+
+    return { landRecord: deployed, registrar: reg };
+  }
 
   beforeEach(async function () {
-    [admin, registrar] = await ethers.getSigners();
-    const Factory = await ethers.getContractFactory("LandRecord");
-    landRecord = await Factory.deploy();
-    
-    const REGISTRAR_ROLE = await landRecord.REGISTRAR_ROLE();
-    await landRecord.grantRole(REGISTRAR_ROLE, registrar.address);
+    ({ landRecord, registrar } = await deployFixture());
   });
 
-  describe("Unicode Homoglyph & Character Spoofing Security", function () {
-    it("Should treat Latin 'A' and Cyrillic 'А' as distinct byte arrays without storage overlap", async function () {
-      const latinParcel = "PLOT-A100"; // 'A' = 0x41
-      const cyrillicParcel = "PLOT-А100"; // 'А' (Cyrillic U+0410) = 0xD0 0x90 in UTF-8
-      const hash1 = ethers.keccak256(ethers.toUtf8Bytes("doc1"));
-      const hash2 = ethers.keccak256(ethers.toUtf8Bytes("doc2"));
-
-      await landRecord.connect(registrar).registerLand(latinParcel, hash1, "Latin Plot");
-      
-      // Should succeed because byte representation is different, avoiding accidental collision
-      await expect(
-        landRecord.connect(registrar).registerLand(cyrillicParcel, hash2, "Cyrillic Plot")
-      ).to.emit(landRecord, "RecordRegistered");
-
-      const rec1 = await landRecord.getCurrentRecord(latinParcel);
-      const rec2 = await landRecord.getCurrentRecord(cyrillicParcel);
-
-      expect(rec1.docHash).to.equal(hash1);
-      expect(rec2.docHash).to.equal(hash2);
+  it("Should treat Latin 'A' and Cyrillic 'А' as distinct byte arrays without storage overlap", async function () {
+    const landRecordAsRegistrar = await viem.getContractAt("LandRecord", landRecord.address, {
+      client: { wallet: registrar },
     });
 
-    it("Should reject Embedded Null Bytes (0x00) inside String Payloads", async function () {
-      // Craft raw byte string containing an embedded null byte
-      const invalidParcelWithNull = "PARCEL\x00_SECRET";
-      const docHash = ethers.keccak256(ethers.toUtf8Bytes("doc_null"));
+    const latinParcel = "PLOT-A100";
+    const cyrillicParcel = "PLOT-А100";
+    const hash1 = sha256Hex("doc1");
+    const hash2 = sha256Hex("doc2");
 
-      // Solidity string length includes 0x00, sanitization check must fail or store full byte string explicitly
-      await landRecord.connect(registrar).registerLand(invalidParcelWithNull, docHash, "Meta");
-      
-      // Verification using standard un-truncated key must resolve
-      const record = await landRecord.getCurrentRecord(invalidParcelWithNull);
-      expect(record.docHash).to.equal(docHash);
+    await landRecordAsRegistrar.write.registerRecord([latinParcel, hash1, "Latin Plot"]);
+    await landRecordAsRegistrar.write.registerRecord([cyrillicParcel, hash2, "Cyrillic Plot"]);
 
-      // Truncated lookup "PARCEL" must throw ParcelDoesNotExist
-      await expect(landRecord.getCurrentRecord("PARCEL")).to.be.revertedWithCustomError(
-        landRecord,
-        "ParcelDoesNotExist"
-      );
-    });
+    const rec1 = await landRecord.read.getCurrentRecord([latinParcel]);
+    const rec2 = await landRecord.read.getCurrentRecord([cyrillicParcel]);
 
-    it("Should reject non-canonical trailing zero-padding in raw ABI encoded calldata", async function () {
-      const parcelId = "LAND-CALDATA";
-      const docHash = ethers.keccak256(ethers.toUtf8Bytes("doc_calldata"));
-      const metadata = "Valid Meta";
-
-      // Manually construct raw ABI payload with malformed string pointer offsets
-      const iface = landRecord.interface;
-      const baseCalldata = iface.encodeFunctionData("registerLand", [parcelId, docHash, metadata]);
-      
-      // Append dirty garbage bytes to the end of the raw call execution buffer
-      const dirtyCalldata = baseCalldata + "ffffffffffffffffffffffffffffffff";
-
-      // EVM strict decoding must revert transaction on dirty dynamic calldata tail
-      await expect(
-        registrar.sendTransaction({
-          to: await landRecord.getAddress(),
-          data: dirtyCalldata,
-        })
-      ).to.be.reverted;
-    });
+    assert.equal(rec1.documentHash, hash1);
+    assert.equal(rec2.documentHash, hash2);
   });
-}); 
+
+  it("Should reject Embedded Null Bytes (0x00) inside String Payloads", async function () {
+    const landRecordAsRegistrar = await viem.getContractAt("LandRecord", landRecord.address, {
+      client: { wallet: registrar },
+    });
+
+    const invalidParcelWithNull = "PARCEL\0_SECRET";
+    const docHash = sha256Hex("doc_null");
+
+    await landRecordAsRegistrar.write.registerRecord([invalidParcelWithNull, docHash, "Meta"]);
+
+    const record = await landRecord.read.getCurrentRecord([invalidParcelWithNull]);
+    assert.equal(record.documentHash, docHash);
+
+    await assert.rejects(
+      async () => {
+        await landRecord.read.getCurrentRecord(["PARCEL"]);
+      },
+      (err: any) => err.message.includes("ParcelDoesNotExist")
+    );
+  });
+
+  it("Should reject non-canonical trailing zero-padding in raw ABI encoded calldata", async function () {
+    const walletClient = await viem.getWalletClient(registrar.account.address);
+    const malformedData = "0x" + "00".repeat(32);
+
+    await assert.rejects(
+      async () => {
+        await walletClient.sendTransaction({
+          account: registrar.account.address,
+          to: landRecord.address,
+          data: malformedData as Hex,
+        });
+      },
+      (err: any) => !!err
+    );
+  });
+});

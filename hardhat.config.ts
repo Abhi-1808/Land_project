@@ -1,8 +1,7 @@
 import { defineConfig } from "hardhat/config";
 import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
-import "@nomicfoundation/hardhat-ethers";
+import hardhatEthers from "@nomicfoundation/hardhat-ethers";
 import * as dotenv from "dotenv";
-import "@nomicfoundation/hardhat-ethers";
 
 dotenv.config();
 
@@ -31,7 +30,7 @@ if (SEPOLIA_RPC_URL && PRIVATE_KEY) {
 }
 
 export default defineConfig({
-  plugins: [hardhatToolboxViem],
+  plugins: [hardhatToolboxViem, hardhatEthers],
   solidity: {
     compilers: [
       {

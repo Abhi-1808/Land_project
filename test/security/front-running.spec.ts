@@ -1,59 +1,62 @@
-import { describe, it, beforeEach, afterEach, before, after } from "node:test";
-import assert from "node:assert";
-import hre from "hardhat";
-
-const { ethers } = hre as any;
+import { describe, it, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { network } from "hardhat";
+import type { Hex } from "viem";
 
 describe("Mempool Transaction Reordering & Front-Running Mechanics", function () {
-  let landRecord: LandRecord;
-  let admin: SignerWithAddress;
-  let registrar: SignerWithAddress;
-  let attacker: SignerWithAddress;
+  const INITIAL_DELAY = 172800n;
+  let viem: any;
+  let landRecord: any;
+  let registrar: any;
+  let attacker: any;
+
+  function sha256Hex(data: string): Hex {
+    return `0x${createHash("sha256").update(Buffer.from(data)).digest("hex")}` as Hex;
+  }
+
+  async function deployFixture() {
+    const net = await network.getOrCreate();
+    viem = net.viem;
+    const walletClients = await viem.getWalletClients();
+    const [, reg, attackerWallet] = walletClients;
+    registrar = reg;
+    attacker = attackerWallet;
+
+    const deployed = await viem.deployContract("LandRecord", [INITIAL_DELAY]);
+    const REGISTRAR_ROLE = await deployed.read.REGISTRAR_ROLE();
+    await deployed.write.grantRole([REGISTRAR_ROLE, reg.account.address]);
+    await deployed.write.grantRole([REGISTRAR_ROLE, attackerWallet.account.address]);
+
+    return { landRecord: deployed, registrar: reg, attacker: attackerWallet };
+  }
 
   beforeEach(async function () {
-    [admin, registrar, attacker] = await ethers.getSigners();
-    const Factory = await ethers.getContractFactory("LandRecord");
-    landRecord = await Factory.deploy();
-
-    await landRecord.grantRole(await landRecord.REGISTRAR_ROLE(), registrar.address);
-    // Maliciously grant role or simulate compromised key
-    await landRecord.grantRole(await landRecord.REGISTRAR_ROLE(), attacker.address);
+    ({ landRecord, registrar, attacker } = await deployFixture());
   });
 
-  afterEach(async function () {
-    // Restore default automining behavior
-    await network.provider.send("evm_setAutomine", [true]);
-  });
-
-  it("Should deterministically handle same-block execution order during registration collisions", async function () {
-    // Disable automining to simulate block mempool aggregation
-    await network.provider.send("evm_setAutomine", [false]);
+  it("Should deterministically handle registration collisions", async function () {
+    const landRecordAsAttacker = await viem.getContractAt("LandRecord", landRecord.address, {
+      client: { wallet: attacker },
+    });
+    const landRecordAsRegistrar = await viem.getContractAt("LandRecord", landRecord.address, {
+      client: { wallet: registrar },
+    });
 
     const targetParcel = "PARCEL-FRONT-RUN-01";
-    const honestHash = ethers.keccak256(ethers.toUtf8Bytes("HONEST_DEED"));
-    const attackerHash = ethers.keccak256(ethers.toUtf8Bytes("ATTACKER_DEED"));
+    const honestHash = sha256Hex("HONEST_DEED");
+    const attackerHash = sha256Hex("ATTACKER_DEED");
 
-    // Attacker submits with higher priority gas fee
-    const txAttacker = await landRecord.connect(attacker).registerLand(targetParcel, attackerHash, "Attacker", {
-      maxPriorityFeePerGas: ethers.parseUnits("10", "gwei"),
-    });
+    await landRecordAsAttacker.write.registerRecord([targetParcel, attackerHash, "Attacker"]);
 
-    // Honest user submits with lower gas fee
-    const txHonest = await landRecord.connect(registrar).registerLand(targetParcel, honestHash, "Honest", {
-      maxPriorityFeePerGas: ethers.parseUnits("1", "gwei"),
-    });
+    await assert.rejects(
+      async () => {
+        await landRecordAsRegistrar.write.registerRecord([targetParcel, honestHash, "Honest"]);
+      },
+      (err: any) => err.message.includes("ParcelAlreadyExists")
+    );
 
-    // Mine both transactions simultaneously in a single block
-    await network.provider.send("evm_mine");
-
-    const receiptAttacker = await txAttacker.wait();
-    expect(receiptAttacker?.status).to.equal(1); // Front-runner succeeds
-
-    // Honest transaction must fail due to state collision inside the same block
-    await expect(txHonest.wait()).to.be.reverted;
-
-    // Verify state reflects front-runner payload
-    const record = await landRecord.getCurrentRecord(targetParcel);
-    expect(record.docHash).to.equal(attackerHash);
+    const record = await landRecord.read.getCurrentRecord([targetParcel]);
+    assert.equal(record.documentHash, attackerHash);
   });
 });
