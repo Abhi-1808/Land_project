@@ -1,0 +1,38 @@
+name: ZK proof validation
+
+on:
+  push:
+    paths:
+      - "zk/**"
+      - "scripts/zk-demo.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/zk-proof.yml"
+  pull_request:
+    paths:
+      - "zk/**"
+      - "scripts/zk-demo.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/zk-proof.yml"
+  workflow_dispatch:
+
+jobs:
+  groth16-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate and verify Groth16 proof
+        run: npm run zk:demo
