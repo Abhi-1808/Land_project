@@ -19,3 +19,5 @@ On the current Windows Node runtime, Circom2 successfully emits the R1CS constra
 ## Windows workaround
 
 The repository includes `.github/workflows/zk-proof.yml`. Push the ZK changes to GitHub and the Ubuntu runner will execute the complete proof flow without requiring WSL on the development machine. The workflow must finish with `"verified": true` before treating the circuit as validated.
+
+After a successful run, download the `ownership-zk-artifacts` workflow artifact. It contains `OwnershipVerifier.sol`, `ownership_final.zkey`, `verification_key.json`, the R1CS, and the witness WASM file. The proving key is a generated artifact and is intentionally not committed to Git.
