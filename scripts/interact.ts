@@ -12,12 +12,13 @@ async function main() {
   const { viem } = await network.connect();
   const publicClient = await viem.getPublicClient();
   const walletClients = await viem.getWalletClients();
+  const chainId = await publicClient.getChainId();
 
   const deploymentRaw = await readFile("deployment.json", "utf-8");
   const deployment = JSON.parse(deploymentRaw);
   const contractAddress = deployment.address as Hex;
 
-  const isLocal = network.name === "localhost" || network.name === "hardhat";
+  const isLocal = chainId === 31337;
 
   let registrarAddress: Hex;
   let revokerAddress: Hex;
